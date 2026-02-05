@@ -1,164 +1,195 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import * as pdfjsLib from "pdfjs-dist/build/pdf.mjs";
+import { useEffect, useRef, useState } from "react";
 
 export default function Home() {
-  const [text, setText] = useState("");
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [voiceIndex, setVoiceIndex] = useState(0);
-  const [rate, setRate] = useState(1);
-  const [dark, setDark] = useState(true);
-  const [progress, setProgress] = useState(0);
-  const [history, setHistory] = useState<string[]>([]);
+  const [pdfjs, setPdfjs] = useState<any>(null);
 
-  /* =====================
-     LOAD VOICES
-  ===================== */
+  const [text, setText] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [dark, setDark] = useState(false);
+
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState("");
+  const [rate, setRate] = useState(1);
+  const [pitch, setPitch] = useState(1);
+
+  const [highlightIndex, setHighlightIndex] = useState(-1);
+
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  /* =========================
+     LOAD PDFJS SAFE (NO WORKER IMPORT)
+  ========================= */
   useEffect(() => {
-    const load = () => setVoices(window.speechSynthesis.getVoices());
+    const load = async () => {
+      const pdf = await import("pdfjs-dist");
+
+      // ✅ CDN worker fixes ALL build errors
+      pdf.GlobalWorkerOptions.workerSrc =
+        `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdf.version}/pdf.worker.min.js`;
+
+      setPdfjs(pdf);
+    };
+
     load();
-    window.speechSynthesis.onvoiceschanged = load;
   }, []);
 
-  /* =====================
-     PDF READ (100% safe)
-  ===================== */
-  const readPDF = async (file: File) => {
+  /* =========================
+     VOICES
+  ========================= */
+  useEffect(() => {
+    const loadVoices = () => {
+      setVoices(window.speechSynthesis.getVoices());
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+  }, []);
+
+  /* =========================
+     PDF TEXT EXTRACTION
+  ========================= */
+  const extractText = async (file: File) => {
+    if (!pdfjs) return;
+
     const buffer = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: buffer }).promise;
 
-    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-
-    let full = "";
+    let combined = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      full += content.items.map((x: any) => x.str).join(" ") + "\n\n";
+
+      combined += content.items.map((item: any) => item.str).join(" ") + " ";
+      setProgress(Math.floor((i / pdf.numPages) * 100));
     }
 
-    setText(full);
-    setHistory((h) => [file.name, ...h.slice(0, 4)]);
+    setText(combined);
   };
 
-  /* =====================
-     SPEECH ENGINE (FIXED)
-  ===================== */
+  /* =========================
+     DRAG DROP
+  ========================= */
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file) extractText(file);
+  };
+
+  /* =========================
+     CHUNKING
+  ========================= */
+  const chunkText = (t: string, size = 600) => {
+    const parts = [];
+    for (let i = 0; i < t.length; i += size) {
+      parts.push(t.slice(i, i + size));
+    }
+    return parts;
+  };
+
+  /* =========================
+     SPEECH
+  ========================= */
   const speak = () => {
     if (!text) return;
 
     window.speechSynthesis.cancel();
 
-    const u = new SpeechSynthesisUtterance(text);
+    const chunks = chunkText(text);
+    let index = 0;
 
-    u.voice = voices[voiceIndex];
-    u.rate = rate;
+    const speakChunk = () => {
+      if (index >= chunks.length) return;
 
-    u.onboundary = (e) => {
-      const percent = (e.charIndex / text.length) * 100;
-      setProgress(percent);
+      const utter = new SpeechSynthesisUtterance(chunks[index]);
+      utterRef.current = utter;
+
+      const voice = voices.find(v => v.name === selectedVoice);
+      if (voice) utter.voice = voice;
+
+      utter.rate = rate;
+      utter.pitch = pitch;
+
+      utter.onboundary = (e: any) => {
+        setHighlightIndex(e.charIndex + index * 600);
+      };
+
+      utter.onend = () => {
+        index++;
+        speakChunk();
+      };
+
+      window.speechSynthesis.speak(utter);
     };
 
-    window.speechSynthesis.speak(u);
+    speakChunk();
   };
 
   const pause = () => window.speechSynthesis.pause();
   const resume = () => window.speechSynthesis.resume();
   const stop = () => window.speechSynthesis.cancel();
 
-  /* =====================
-     TEXT DOWNLOAD (REAL)
-  ===================== */
-  const downloadText = () => {
-    const blob = new Blob([text], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "pdf-text.txt";
-    a.click();
-  };
-
-  /* =====================
-     DRAG DROP
-  ===================== */
-  const drop = (e: React.DragEvent) => {
-    e.preventDefault();
-    readPDF(e.dataTransfer.files[0]);
-  };
-
-  const theme = dark
-    ? "bg-gradient-to-br from-indigo-900 via-purple-800 to-pink-700 text-white"
-    : "bg-gradient-to-br from-gray-100 to-gray-300 text-black";
-
-  /* =====================
+  /* =========================
      UI
-  ===================== */
+  ========================= */
+  const words = text.split(" ");
+
   return (
-    <main
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={drop}
-      className={`${theme} min-h-screen p-6 transition-all`}
-    >
-      <div className="max-w-4xl mx-auto space-y-6">
+    <main className={`min-h-screen p-10 ${dark ? "bg-black text-white" : "bg-gray-100 text-black"}`}>
+      <h1 className="text-3xl font-bold mb-6">🎧 Ultimate PDF → Audio</h1>
 
-        <h1 className="text-3xl font-bold text-center">
-          🎧 PDF → Audio Reader (Stable Version)
-        </h1>
+      <button
+        onClick={() => setDark(!dark)}
+        className="mb-4 px-4 py-2 bg-indigo-600 text-white rounded"
+      >
+        Toggle {dark ? "Light" : "Dark"}
+      </button>
 
-        <button
-          onClick={() => setDark(!dark)}
-          className="px-4 py-2 bg-black/30 rounded"
-        >
-          Toggle Dark/Light
-        </button>
+      <div
+        onDrop={handleDrop}
+        onDragOver={e => e.preventDefault()}
+        className="border-4 border-dashed p-10 mb-4 text-center rounded"
+      >
+        Drag & Drop PDF Here
+      </div>
 
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={(e) => e.target.files && readPDF(e.target.files[0])}
-        />
-
-        <div className="w-full bg-black/20 h-3 rounded">
-          <div
-            style={{ width: progress + "%" }}
-            className="bg-green-400 h-3 rounded"
-          />
+      {progress > 0 && (
+        <div className="w-full bg-gray-300 h-3 mb-4 rounded">
+          <div className="bg-green-500 h-3" style={{ width: `${progress}%` }} />
         </div>
+      )}
 
-        <div className="grid grid-cols-4 gap-2">
-          <button onClick={speak}>Play</button>
-          <button onClick={pause}>Pause</button>
-          <button onClick={resume}>Resume</button>
-          <button onClick={stop}>Stop</button>
-        </div>
+      <div className="flex gap-2 mb-4 flex-wrap">
+        <button onClick={speak} className="btn">Play</button>
+        <button onClick={pause} className="btn">Pause</button>
+        <button onClick={resume} className="btn">Resume</button>
+        <button onClick={stop} className="btn">Stop</button>
 
-        <select
-          value={voiceIndex}
-          onChange={(e) => setVoiceIndex(Number(e.target.value))}
-        >
-          {voices.map((v, i) => (
-            <option key={i} value={i}>
-              {v.name}
-            </option>
+        <select onChange={e => setSelectedVoice(e.target.value)} className="btn">
+          {voices.map(v => (
+            <option key={v.name}>{v.name}</option>
           ))}
         </select>
+      </div>
 
-        <input
-          type="range"
-          min="0.5"
-          max="2"
-          step="0.1"
-          value={rate}
-          onChange={(e) => setRate(Number(e.target.value))}
-        />
-
-        <button onClick={downloadText}>Download Extracted Text</button>
-
-        {history.map((h, i) => (
-          <p key={i}>{h}</p>
+      <div className="text-lg leading-8">
+        {words.map((w, i) => (
+          <span key={i} className={i === highlightIndex ? "bg-yellow-400 text-black" : ""}>
+            {w}{" "}
+          </span>
         ))}
       </div>
+
+      <style jsx>{`
+        .btn {
+          background: #2563eb;
+          color: white;
+          padding: 8px 14px;
+          border-radius: 8px;
+        }
+      `}</style>
     </main>
   );
 }
