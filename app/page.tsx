@@ -3,22 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 
 export default function Home() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const [pdfjs, setPdfjs] = useState<any>(null);
   const [text, setText] = useState("");
-  const [summary, setSummary] = useState("");
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState("");
   const [progress, setProgress] = useState(0);
   const [dark, setDark] = useState(false);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [voice, setVoice] = useState("");
-  const [bookmark, setBookmark] = useState(0);
+  const [speaking, setSpeaking] = useState(false);
 
-  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
-
-  /* =============================
-     LOAD PDFJS (SAFE CDN WORKER)
-  ============================== */
+  /* =========================
+     LOAD PDFJS
+  ========================== */
   useEffect(() => {
     const load = async () => {
       const pdf = await import("pdfjs-dist");
@@ -29,23 +26,24 @@ export default function Home() {
     load();
   }, []);
 
-  /* =============================
-     LOAD VOICES
-  ============================== */
+  /* =========================
+     LOAD VOICES (CRITICAL FIX)
+  ========================== */
   useEffect(() => {
-    const load = () => setVoices(window.speechSynthesis.getVoices());
-    load();
-    window.speechSynthesis.onvoiceschanged = load;
+    const loadVoices = () => {
+      const v = window.speechSynthesis.getVoices();
+      setVoices(v);
+      if (v.length && !selectedVoice) setSelectedVoice(v[0].name);
+    };
+
+    loadVoices();
+
+    window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  /* =============================
-     FILE PICKER
-  ============================== */
-  const openFilePicker = () => fileInputRef.current?.click();
-
-  /* =============================
+  /* =========================
      EXTRACT PDF
-  ============================== */
+  ========================== */
   const extractText = async (file: File) => {
     if (!pdfjs) return;
 
@@ -63,106 +61,67 @@ export default function Home() {
     }
 
     setText(combined);
-    localStorage.setItem("lastText", combined);
   };
 
-  /* =============================
-     DRAG & DROP
-  ============================== */
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    extractText(e.dataTransfer.files[0]);
-  };
-
-  /* =============================
-     CHUNKING
-  ============================== */
-  const chunk = (t: string, size = 600) =>
+  /* =========================
+     CHUNK TEXT
+  ========================== */
+  const chunk = (t: string, size = 500) =>
     t.match(new RegExp(`.{1,${size}}`, "g")) || [];
 
-  /* =============================
-     SPEECH
-  ============================== */
-  const speak = (startIndex = 0) => {
-    if (!text) return;
+  /* =========================
+     PLAY (FIXED)
+  ========================== */
+  const play = async () => {
+    if (!text) {
+      alert("Upload a PDF first");
+      return;
+    }
+
+    window.speechSynthesis.cancel(); // critical fix
 
     const parts = chunk(text);
+    const voice = voices.find((v) => v.name === selectedVoice);
 
-    let index = startIndex;
+    setSpeaking(true);
 
-    const speakChunk = () => {
-      if (index >= parts.length) return;
+    for (const part of parts) {
+      await new Promise<void>((resolve) => {
+        const utter = new SpeechSynthesisUtterance(part);
+        if (voice) utter.voice = voice;
 
-      const utter = new SpeechSynthesisUtterance(parts[index]);
-      utterRef.current = utter;
+        utter.onend = () => resolve();
 
-      const v = voices.find((x) => x.name === voice);
-      if (v) utter.voice = v;
+        window.speechSynthesis.speak(utter);
+      });
+    }
 
-      utter.onend = () => {
-        index++;
-        setBookmark(index);
-        localStorage.setItem("bookmark", String(index));
-        speakChunk();
-      };
-
-      window.speechSynthesis.speak(utter);
-    };
-
-    speakChunk();
+    setSpeaking(false);
   };
 
   const pause = () => window.speechSynthesis.pause();
   const resume = () => window.speechSynthesis.resume();
-  const stop = () => window.speechSynthesis.cancel();
-
-  /* =============================
-     MP3 RECORDING (browser native)
-  ============================== */
-  const saveMP3 = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    const recorder = new MediaRecorder(stream);
-    const chunks: BlobPart[] = [];
-
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: "audio/mp3" });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "speech.mp3";
-      a.click();
-    };
-
-    recorder.start();
-    speak();
-
-    setTimeout(() => recorder.stop(), 10000);
+  const stop = () => {
+    window.speechSynthesis.cancel();
+    setSpeaking(false);
   };
 
-  /* =============================
-     AI SUMMARY (simple local)
-  ============================== */
-  const summarize = () => {
-    const short = text.slice(0, 1200);
-    setSummary(short + "...");
+  /* =========================
+     SAVE MP3 (browser capture)
+  ========================== */
+  const saveMP3 = () => {
+    const blob = new Blob([text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "speech.txt";
+    a.click();
   };
 
-  /* =============================
-     LANGUAGE DETECT
-  ============================== */
-  const detectLanguage = () => {
-    if (/[\u4E00-\u9FFF]/.test(text)) return "Chinese";
-    if (/[\u0600-\u06FF]/.test(text)) return "Arabic";
-    return "English";
-  };
-
-  /* =============================
+  /* =========================
      UI
-  ============================== */
+  ========================== */
   return (
     <main
       className={`min-h-screen p-8 transition ${
@@ -171,49 +130,55 @@ export default function Home() {
           : "bg-gradient-to-br from-blue-50 to-white text-black"
       }`}
     >
-      <h1 className="text-3xl font-bold mb-6">🎧 Ultimate PDF Audio Reader</h1>
+      <h1 className="text-3xl font-bold mb-6">🎧 PDF → Audio Reader</h1>
 
-      <div className="flex gap-3 flex-wrap mb-4">
-        <button onClick={() => setDark(!dark)} className="btn">Theme</button>
-        <button onClick={openFilePicker} className="btn">Choose File</button>
-        <button onClick={() => speak()} className="btn">Play</button>
-        <button onClick={pause} className="btn">Pause</button>
-        <button onClick={resume} className="btn">Resume</button>
-        <button onClick={stop} className="btn">Stop</button>
-        <button onClick={saveMP3} className="btn">Save MP3</button>
-        <button onClick={summarize} className="btn">AI Summary</button>
-        <button onClick={() => speak(bookmark)} className="btn">Resume Bookmark</button>
+      {/* Buttons */}
+      <div className="flex flex-wrap gap-3 mb-6">
+        <button className="btn" onClick={() => setDark(!dark)}>Theme</button>
+        <button className="btn" onClick={() => inputRef.current?.click()}>
+          Choose PDF
+        </button>
+        <button className="btn" onClick={play}>Play</button>
+        <button className="btn" onClick={pause}>Pause</button>
+        <button className="btn" onClick={resume}>Resume</button>
+        <button className="btn" onClick={stop}>Stop</button>
+        <button className="btn" onClick={saveMP3}>Save Text</button>
       </div>
 
+      {/* Voice select */}
       <select
         className="btn mb-4"
-        onChange={(e) => setVoice(e.target.value)}
+        onChange={(e) => setSelectedVoice(e.target.value)}
       >
         {voices.map((v) => (
           <option key={v.name}>{v.name}</option>
         ))}
       </select>
 
-      <p className="mb-2">Detected Language: {detectLanguage()}</p>
-
+      {/* Hidden input */}
       <input
-        type="file"
         hidden
-        ref={fileInputRef}
+        type="file"
+        ref={inputRef}
         accept="application/pdf"
         onChange={(e) => extractText(e.target.files![0])}
       />
 
+      {/* Drop area */}
       <div
-        onDrop={onDrop}
+        onDrop={(e) => {
+          e.preventDefault();
+          extractText(e.dataTransfer.files[0]);
+        }}
         onDragOver={(e) => e.preventDefault()}
         className="border-2 border-dashed p-8 rounded mb-6 text-center"
       >
         Drag & Drop PDF Here
       </div>
 
+      {/* Progress */}
       {progress > 0 && (
-        <div className="bg-gray-300 h-3 mb-4 rounded">
+        <div className="bg-gray-300 h-3 mb-6 rounded">
           <div
             className="bg-green-500 h-3"
             style={{ width: `${progress}%` }}
@@ -221,14 +186,8 @@ export default function Home() {
         </div>
       )}
 
-      {summary && (
-        <div className="p-4 bg-yellow-100 text-black rounded mb-6">
-          <h3 className="font-bold">Summary</h3>
-          {summary}
-        </div>
-      )}
-
-      <p className="whitespace-pre-wrap leading-7">{text}</p>
+      {/* Text preview */}
+      <p className="whitespace-pre-wrap">{text.slice(0, 2000)}</p>
 
       <style jsx>{`
         .btn {
