@@ -1,216 +1,177 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { FiUpload, FiDownload, FiPlay, FiSun, FiMoon } from "react-icons/fi";
+import { useEffect, useRef, useState } from "react";
 
-/* ================================
-   Types
-================================ */
-interface HistoryItem {
+type HistoryItem = {
   name: string;
-  date: string;
-}
+  text: string;
+};
 
-/* ================================
-   Page Component
-================================ */
 export default function Home() {
-  /* ================================
-     State
-  ================================= */
-  const [dark, setDark] = useState(true);
-
   const [text, setText] = useState("");
-  const [fileName, setFileName] = useState("");
-  const [progress, setProgress] = useState(0);
-
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [voiceURI, setVoiceURI] = useState("");
+  const [voiceIndex, setVoiceIndex] = useState(0);
   const [rate, setRate] = useState(1);
-
-  const [audioURL, setAudioURL] = useState("");
-
+  const [volume, setVolume] = useState(1);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [audioURL, setAudioURL] = useState<string | null>(null);
 
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  /* ================================
-     Load browser voices
-  ================================= */
+  /* ---------------- LOAD VOICES ---------------- */
   useEffect(() => {
-    const loadVoices = () => {
-      const v = speechSynthesis.getVoices();
-      setVoices(v);
-      if (v[0]) setVoiceURI(v[0].voiceURI);
-    };
-
-    loadVoices();
-    speechSynthesis.onvoiceschanged = loadVoices;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
   }, []);
 
-  /* ================================
-     Extract PDF text (Vercel safe)
-     NO worker
-     NO workerSrc
-  ================================= */
-  const extractPDF = async (file: File) => {
-    setProgress(5);
+  /* ---------------- HISTORY ---------------- */
+  useEffect(() => {
+    const saved = localStorage.getItem("pdfHistory");
+    if (saved) setHistory(JSON.parse(saved));
+  }, []);
 
-    const pdfjsLib: any = await import("pdfjs-dist"); // ✅ SAFE
+  const saveHistory = (item: HistoryItem) => {
+    const updated = [item, ...history].slice(0, 10);
+    setHistory(updated);
+    localStorage.setItem("pdfHistory", JSON.stringify(updated));
+  };
+
+  /* ---------------- PDF EXTRACTION ---------------- */
+  const handleFile = async (file: File) => {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
 
     const buffer = await file.arrayBuffer();
 
-    const pdf = await pdfjsLib.getDocument({
-      data: buffer,
-      disableWorker: true, // ✅ ONLY required
-    }).promise;
+    const pdf = await pdfjs.getDocument({ data: buffer }).promise;
 
-    let combined = "";
+    let fullText = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
 
-      combined += content.items.map((x: any) => x.str).join(" ") + "\n";
-
-      setProgress(Math.floor((i / pdf.numPages) * 100));
+      fullText +=
+        content.items
+          .map((item: any) => item.str)
+          .join(" ") + "\n\n";
     }
 
-    setText(combined);
+    setText(fullText);
+
+    saveHistory({
+      name: file.name,
+      text: fullText,
+    });
   };
 
-  /* ================================
-     Upload handler
-  ================================= */
-  const handleFile = async (e: any) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setFileName(file.name);
-
-    await extractPDF(file);
-
-    setHistory((prev) => [
-      { name: file.name, date: new Date().toLocaleString() },
-      ...prev.slice(0, 4),
-    ]);
-  };
-
-  /* ================================
-     Preview speech (browser TTS)
-  ================================= */
-  const previewSpeech = () => {
+  /* ---------------- PLAY CONTROLS ---------------- */
+  const speak = () => {
     if (!text) return;
 
-    speechSynthesis.cancel();
+    window.speechSynthesis.cancel();
 
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = rate;
-    utter.voice = voices.find((v) => v.voiceURI === voiceURI) || null;
+    const u = new SpeechSynthesisUtterance(text);
 
-    speechSynthesis.speak(utter);
+    u.voice = voices[voiceIndex];
+    u.rate = rate;
+    u.volume = volume;
+
+    utteranceRef.current = u;
+
+    window.speechSynthesis.speak(u);
   };
 
-  /* ================================
-     Direct MP3 download
-     (safe dynamic lamejs)
-  ================================= */
-  const downloadMP3 = async () => {
+  const pause = () => window.speechSynthesis.pause();
+  const resume = () => window.speechSynthesis.resume();
+  const stop = () => window.speechSynthesis.cancel();
+
+  /* ---------------- RECORD → WAV DOWNLOAD ---------------- */
+  const downloadAudio = async () => {
     if (!text) return;
 
-    const lameModule: any = await import("lamejs");
-    const lamejs = lameModule.default || lameModule;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-    const sampleRate = 44100;
+    const recorder = new MediaRecorder(stream);
 
-    // generate small silent mp3 file instantly
-    const duration = Math.max(3, Math.min(text.length / 12, 30));
-    const samples = new Int16Array(sampleRate * duration);
+    const chunks: BlobPart[] = [];
 
-    const encoder = new lamejs.Mp3Encoder(1, sampleRate, 128);
+    recorder.ondataavailable = (e) => chunks.push(e.data);
 
-    const blockSize = 1152;
-    const mp3Data: Uint8Array[] = [];
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: "audio/webm" });
+      const url = URL.createObjectURL(blob);
+      setAudioURL(url);
 
-    for (let i = 0; i < samples.length; i += blockSize) {
-      const chunk = samples.subarray(i, i + blockSize);
-      const buf = encoder.encodeBuffer(chunk);
-      if (buf.length) mp3Data.push(buf);
-    }
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "pdf-audio.webm"; // plays everywhere
+      a.click();
+    };
 
-    const end = encoder.flush();
-    if (end.length) mp3Data.push(end);
+    recorder.start();
 
-    const blob = new Blob(mp3Data, { type: "audio/mp3" });
-    const url = URL.createObjectURL(blob);
+    const u = new SpeechSynthesisUtterance(text);
+    u.voice = voices[voiceIndex];
+    u.rate = rate;
+    u.volume = volume;
 
-    setAudioURL(url);
+    u.onend = () => recorder.stop();
 
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${fileName || "audio"}.mp3`;
-    a.click();
+    window.speechSynthesis.speak(u);
   };
 
-  /* ================================
-     UI
-  ================================= */
+  const readingTime = Math.ceil(text.split(" ").length / 180);
+
+  /* ---------------- UI ---------------- */
   return (
-    <div
-      className={`min-h-screen transition-all duration-700 ${
-        dark
-          ? "bg-gradient-to-br from-slate-900 via-indigo-900 to-black text-white"
-          : "bg-gradient-to-br from-blue-100 via-white to-indigo-200 text-black"
-      }`}
-    >
-      <div className="max-w-5xl mx-auto p-8 space-y-8">
-        {/* Header */}
-        <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold">PDF → Audio Dashboard</h1>
+    <main className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-800 to-pink-700 text-white p-6">
+      <div className="max-w-5xl mx-auto space-y-6">
 
-          <button
-            onClick={() => setDark(!dark)}
-            className="p-3 rounded-xl bg-indigo-600 hover:scale-105 transition"
-          >
-            {dark ? <FiSun /> : <FiMoon />}
+        <h1 className="text-4xl font-bold text-center">
+          🚀 Ultimate PDF → Audio System
+        </h1>
+
+        {/* Upload */}
+        <div className="bg-white/10 rounded-xl p-6 backdrop-blur">
+          <input
+            type="file"
+            accept="application/pdf"
+            onChange={(e) => e.target.files && handleFile(e.target.files[0])}
+          />
+        </div>
+
+        {/* Text preview */}
+        {text && (
+          <textarea
+            value={text}
+            readOnly
+            className="w-full h-40 p-4 text-black rounded-lg"
+          />
+        )}
+
+        {/* Controls */}
+        <div className="grid md:grid-cols-5 gap-3">
+
+          <button onClick={speak} className="bg-green-600 p-3 rounded">Play</button>
+          <button onClick={pause} className="bg-yellow-500 p-3 rounded">Pause</button>
+          <button onClick={resume} className="bg-blue-500 p-3 rounded">Resume</button>
+          <button onClick={stop} className="bg-red-600 p-3 rounded">Stop</button>
+          <button onClick={downloadAudio} className="bg-indigo-600 p-3 rounded">
+            Download Audio
           </button>
         </div>
 
-        {/* Upload */}
-        <div className="p-6 rounded-2xl bg-white/10 backdrop-blur shadow-lg">
-          <label htmlFor="pdf" className="block mb-2 font-semibold">
-            Upload PDF
-          </label>
-
-          <input
-            id="pdf"
-            name="pdf"
-            type="file"
-            accept="application/pdf"
-            onChange={handleFile}
-          />
-
-          {progress > 0 && (
-            <div className="mt-4 w-full bg-gray-300 rounded">
-              <div
-                className="bg-indigo-600 h-3 rounded transition-all"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Controls */}
+        {/* Settings */}
         <div className="grid md:grid-cols-3 gap-4">
+
           <select
-            value={voiceURI}
-            onChange={(e) => setVoiceURI(e.target.value)}
-            className="p-2 rounded text-black"
+            value={voiceIndex}
+            onChange={(e) => setVoiceIndex(Number(e.target.value))}
+            className="text-black p-2 rounded"
           >
-            {voices.map((v) => (
-              <option key={v.voiceURI} value={v.voiceURI}>
-                {v.name}
-              </option>
+            {voices.map((v, i) => (
+              <option key={i} value={i}>{v.name}</option>
             ))}
           </select>
 
@@ -223,41 +184,46 @@ export default function Home() {
             onChange={(e) => setRate(Number(e.target.value))}
           />
 
-          <div className="flex gap-2">
-            <button
-              onClick={previewSpeech}
-              className="flex items-center gap-2 bg-green-600 px-4 py-2 rounded"
-            >
-              <FiPlay /> Preview
-            </button>
-
-            <button
-              onClick={downloadMP3}
-              className="flex items-center gap-2 bg-indigo-600 px-4 py-2 rounded"
-            >
-              <FiDownload /> MP3
-            </button>
-          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            value={volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+          />
         </div>
+
+        {/* Reading time */}
+        {text && (
+          <p className="text-center">
+            ⏱ Estimated reading time: {readingTime} minutes
+          </p>
+        )}
 
         {/* Audio preview */}
         {audioURL && (
-          <audio ref={audioRef} controls src={audioURL} className="w-full" />
+          <audio controls src={audioURL} className="w-full" />
         )}
 
         {/* History */}
-        <div>
-          <h2 className="font-semibold mb-2">Recent PDFs</h2>
+        {history.length > 0 && (
+          <div className="bg-white/10 p-4 rounded-xl space-y-2">
+            <h2 className="font-bold">History</h2>
 
-          <ul className="space-y-2 text-sm opacity-80">
             {history.map((h, i) => (
-              <li key={i}>
-                {h.name} — {h.date}
-              </li>
+              <button
+                key={i}
+                onClick={() => setText(h.text)}
+                className="block w-full text-left hover:underline"
+              >
+                {h.name}
+              </button>
             ))}
-          </ul>
-        </div>
+          </div>
+        )}
+
       </div>
-    </div>
+    </main>
   );
 }
