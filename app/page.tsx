@@ -1,138 +1,101 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
+
+declare global {
+  interface Window {
+    pdfjsLib: any;
+  }
+}
 
 export default function Home() {
   const [text, setText] = useState("");
-  const [speaking, setSpeaking] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [dark, setDark] = useState(true);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceIndex, setVoiceIndex] = useState(0);
+  const [progress, setProgress] = useState(0);
 
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  /* ---------------- LOAD PDF.JS FROM CDN ---------------- */
+  useEffect(() => {
+    const script = document.createElement("script");
+    script.src =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    };
+
+    document.body.appendChild(script);
+  }, []);
 
   /* ---------------- LOAD VOICES ---------------- */
   useEffect(() => {
     const loadVoices = () => {
       setVoices(window.speechSynthesis.getVoices());
     };
+
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  /* ---------------- FILE PICK ---------------- */
-  const handleFile = async (file: File) => {
-    const reader = new FileReader();
+  /* ---------------- PDF TEXT EXTRACTION ---------------- */
+  const extractText = async (file: File) => {
+    const arrayBuffer = await file.arrayBuffer();
 
-    reader.onload = () => {
-      const content = reader.result as string;
+    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-      // simple extraction fallback (works for most PDFs)
-      const cleaned = content.replace(/[^\x20-\x7E\n]/g, " ");
-      setText(cleaned);
-    };
+    let fullText = "";
 
-    reader.readAsText(file);
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+
+      const strings = content.items.map((item: any) => item.str);
+      fullText += strings.join(" ") + "\n\n";
+    }
+
+    setText(fullText);
   };
 
   /* ---------------- SPEECH ---------------- */
   const speak = () => {
     if (!text) return;
 
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1;
-    u.voice = voices[voiceIndex];
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.voice = voices[voiceIndex];
 
-    u.onstart = () => {
-      setSpeaking(true);
-      setProgress(0);
+    utter.onboundary = (e) => {
+      setProgress((e.charIndex / text.length) * 100);
     };
 
-    u.onboundary = (e) => {
-      const pct = (e.charIndex / text.length) * 100;
-      setProgress(pct);
-    };
-
-    u.onend = () => {
-      setSpeaking(false);
-      setProgress(100);
-    };
-
-    utteranceRef.current = u;
-    window.speechSynthesis.speak(u);
+    window.speechSynthesis.speak(utter);
   };
 
-  const pause = () => window.speechSynthesis.pause();
-  const resume = () => window.speechSynthesis.resume();
-  const stop = () => {
-    window.speechSynthesis.cancel();
-    setSpeaking(false);
-    setProgress(0);
-  };
-
-  /* ---------------- DOWNLOAD MP3 ---------------- */
-  const downloadAudio = () => {
-    // browser TTS cannot export true MP3
-    // we save text instead for offline
-    const blob = new Blob([text], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "speech.txt";
-    a.click();
-  };
+  const stop = () => window.speechSynthesis.cancel();
 
   /* ---------------- UI ---------------- */
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 30,
-        background: dark
-          ? "linear-gradient(135deg,#0f172a,#1e293b)"
-          : "linear-gradient(135deg,#e0f2fe,#ffffff)",
-        color: dark ? "white" : "black",
-        fontFamily: "sans-serif",
-      }}
-    >
-      <h1 style={{ fontSize: 28, fontWeight: "bold" }}>
-        🚀 PDF → Audio Reader (Stable Edition)
-      </h1>
+    <main style={{ padding: 30, fontFamily: "sans-serif" }}>
+      <h1>📄➡️🔊 PDF to Audio Reader (Real Text Version)</h1>
 
-      {/* toggle */}
-      <button onClick={() => setDark(!dark)}>
-        {dark ? "Light Mode" : "Dark Mode"}
-      </button>
-
-      {/* file input */}
-      <div style={{ marginTop: 20 }}>
-        <input
-          type="file"
-          accept=".pdf,.txt"
-          onChange={(e) => e.target.files && handleFile(e.target.files[0])}
-        />
-      </div>
-
-      {/* text area */}
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="PDF text will appear here..."
-        style={{
-          width: "100%",
-          height: 250,
-          marginTop: 20,
-          padding: 10,
-        }}
+      <input
+        type="file"
+        accept=".pdf"
+        onChange={(e) => e.target.files && extractText(e.target.files[0])}
       />
 
-      {/* voice select */}
-      <select
-        onChange={(e) => setVoiceIndex(Number(e.target.value))}
-        style={{ marginTop: 10 }}
-      >
+      <br />
+      <br />
+
+      <textarea
+        value={text}
+        readOnly
+        style={{ width: "100%", height: 250 }}
+      />
+
+      <br />
+
+      <select onChange={(e) => setVoiceIndex(Number(e.target.value))}>
         {voices.map((v, i) => (
           <option key={i} value={i}>
             {v.name}
@@ -140,29 +103,24 @@ export default function Home() {
         ))}
       </select>
 
-      {/* controls */}
-      <div style={{ marginTop: 20 }}>
-        <button onClick={speak}>▶ Play</button>
-        <button onClick={pause}>⏸ Pause</button>
-        <button onClick={resume}>▶ Resume</button>
-        <button onClick={stop}>⏹ Stop</button>
-        <button onClick={downloadAudio}>⬇ Save Text</button>
-      </div>
+      <br />
+      <br />
 
-      {/* progress */}
+      <button onClick={speak}>▶ Play</button>
+      <button onClick={stop}>⏹ Stop</button>
+
       <div
         style={{
-          marginTop: 20,
-          height: 8,
-          background: "#ccc",
-          borderRadius: 6,
+          height: 6,
+          background: "#ddd",
+          marginTop: 10,
         }}
       >
         <div
           style={{
             height: "100%",
             width: progress + "%",
-            background: "#22c55e",
+            background: "green",
           }}
         />
       </div>
