@@ -1,276 +1,197 @@
 "use client";
 
-/*
-PRO STABLE BUILD — NO pdfjs npm, NO workers, NO lamejs
-Everything runs via CDN + browser APIs so Turbopack NEVER breaks.
-
-FEATURES INCLUDED
-✅ Drag + picker upload
-✅ Real PDF text extraction
-✅ Speech synthesis
-✅ ElevenLabs voices (API optional)
-✅ AI summarizer (browser based)
-✅ Chapters
-✅ Bookmarks
-✅ Chunk reading
-✅ Background playback
-✅ Progress bar
-✅ Dark/Light
-✅ PWA safe (manifest ready)
-*/
-
 import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
 
-// ---------- TYPES ----------
-interface Chapter {
-  title: string;
-  start: number;
-}
+export default function Page() {
+  /* ---------------- STATE ---------------- */
 
-export default function Home() {
-  /* ================= STATES ================= */
   const [text, setText] = useState("");
-  const [summary, setSummary] = useState("");
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [voiceIndex, setVoiceIndex] = useState(0);
+  const [chunks, setChunks] = useState<string[]>([]);
+  const [index, setIndex] = useState(0);
+
   const [progress, setProgress] = useState(0);
-  const [dark, setDark] = useState(true);
-  const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [bookmarks, setBookmarks] = useState<number[]>([]);
-  const [chunkSize, setChunkSize] = useState(1200);
-  const [elevenKey, setElevenKey] = useState("");
-  const [audioURL, setAudioURL] = useState("");
+  const [dark, setDark] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
-  const currentIndex = useRef(0);
-  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const synthRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  /* ================= LOAD PDF.JS CDN ================= */
+  /* ---------------- THEME ---------------- */
+
   useEffect(() => {
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    s.onload = () => {
-      // @ts-ignore
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    };
-    document.body.appendChild(s);
-  }, []);
+    document.body.style.background = dark ? "#0f172a" : "#ffffff";
+    document.body.style.color = dark ? "white" : "black";
+  }, [dark]);
 
-  /* ================= VOICES ================= */
-  useEffect(() => {
-    const load = () => setVoices(speechSynthesis.getVoices());
-    load();
-    speechSynthesis.onvoiceschanged = load;
-  }, []);
+  /* ---------------- FILE READ ---------------- */
 
-  /* ================= PDF EXTRACTION ================= */
-  const extractText = async (file: File) => {
-    // @ts-ignore
-    const pdfjs = window.pdfjsLib;
+  const handleFile = async (file: File) => {
+    setProgress(10);
 
     const buffer = await file.arrayBuffer();
-    const pdf = await pdfjs.getDocument({ data: buffer }).promise;
 
-    let full = "";
+    // simple text extraction
+    const decoder = new TextDecoder("utf-8");
+    let raw = decoder.decode(buffer);
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const strings = content.items.map((it: any) => it.str);
-      full += strings.join(" ") + "\n\n";
-    }
+    setProgress(40);
 
-    setText(full);
-    autoChapters(full);
+    // remove weird binary symbols
+    raw = raw.replace(/[^\x20-\x7E\n]/g, " ");
+
+    setProgress(70);
+
+    setText(raw);
+
+    const split = raw.match(/.{1,600}/g) || [];
+    setChunks(split);
+
+    setProgress(100);
   };
 
-  /* ================= CHAPTER DETECTION ================= */
-  const autoChapters = (t: string) => {
-    const lines = t.split("\n");
-    let index = 0;
-    const ch: Chapter[] = [];
+  /* ---------------- DRAG DROP ---------------- */
 
-    for (const l of lines) {
-      if (l.length < 60 && l === l.toUpperCase()) {
-        ch.push({ title: l.trim(), start: index });
-      }
-      index += l.length + 1;
+  const drop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) {
+      handleFile(e.dataTransfer.files[0]);
     }
-
-    setChapters(ch);
   };
 
-  /* ================= CHUNK SPEECH ================= */
-  const speakChunk = (start = 0) => {
-    if (!text) return;
+  /* ---------------- SPEECH ---------------- */
 
-    currentIndex.current = start;
-    const part = text.slice(start, start + chunkSize);
+  const speakChunk = (i: number) => {
+    if (!chunks[i]) return;
 
-    const utter = new SpeechSynthesisUtterance(part);
-    utter.voice = voices[voiceIndex];
-    utterRef.current = utter;
+    window.speechSynthesis.cancel();
 
-    utter.onboundary = (e) => {
-      setProgress(((start + e.charIndex) / text.length) * 100);
-    };
+    const utter = new SpeechSynthesisUtterance(chunks[i]);
+    utter.rate = 1;
+    utter.pitch = 1;
 
     utter.onend = () => {
-      const next = start + chunkSize;
-      if (next < text.length) speakChunk(next);
+      if (i + 1 < chunks.length && playing) {
+        setIndex(i + 1);
+        speakChunk(i + 1);
+      }
     };
 
-    speechSynthesis.speak(utter);
+    synthRef.current = utter;
+    window.speechSynthesis.speak(utter);
   };
 
-  const stop = () => speechSynthesis.cancel();
-
-  /* ================= BOOKMARK ================= */
-  const addBookmark = () => {
-    setBookmarks((b) => [...b, currentIndex.current]);
+  const play = () => {
+    if (!chunks.length) return;
+    setPlaying(true);
+    speakChunk(index);
   };
 
-  /* ================= SUMMARY (simple AI style) ================= */
+  const pause = () => {
+    window.speechSynthesis.pause();
+  };
+
+  const resume = () => {
+    window.speechSynthesis.resume();
+  };
+
+  const stop = () => {
+    setPlaying(false);
+    window.speechSynthesis.cancel();
+  };
+
+  /* ---------------- BOOKMARK ---------------- */
+
+  const bookmark = () => {
+    localStorage.setItem("bookmark", String(index));
+    alert("Bookmark saved");
+  };
+
+  const resumeBookmark = () => {
+    const saved = localStorage.getItem("bookmark");
+    if (!saved) return;
+
+    const i = parseInt(saved);
+    setIndex(i);
+    speakChunk(i);
+  };
+
+  /* ---------------- SUMMARIZER ---------------- */
+
   const summarize = () => {
-    const sentences = text.split(".");
-    const short = sentences.slice(0, 8).join(".") + ".";
-    setSummary(short);
+    const words = text.split(" ").slice(0, 120).join(" ");
+    alert("Summary:\n\n" + words + "...");
   };
 
-  /* ================= ELEVENLABS ================= */
-  const elevenSpeak = async () => {
-    if (!elevenKey || !text) return;
+  /* ---------------- UI ---------------- */
 
-    const res = await fetch(
-      "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
-      {
-        method: "POST",
-        headers: {
-          "xi-api-key": elevenKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text }),
-      }
-    );
-
-    const blob = await res.blob();
-    setAudioURL(URL.createObjectURL(blob));
-  };
-
-  /* ================= PWA SERVICE WORKER ================= */
-  useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js");
-    }
-  }, []);
-
-  /* ================= UI ================= */
   return (
-    <main
-      className={`min-h-screen p-8 ${
-        dark ? "bg-gray-900 text-white" : "bg-white text-black"
-      }`}
-    >
-      <h1 className="text-3xl font-bold mb-6">🚀 PDF → Audio PRO</h1>
+    <main style={{ padding: 30, fontFamily: "sans-serif", maxWidth: 900, margin: "auto" }}>
 
-      <button
-        onClick={() => setDark(!dark)}
-        className="mb-4 px-4 py-2 rounded bg-blue-600"
-      >
-        Toggle Theme
-      </button>
+      <h1>📘 PDF → Audio Reader (Pro Stable)</h1>
 
       {/* Upload */}
+      <input
+        type="file"
+        accept="application/pdf"
+        onChange={(e) => e.target.files && handleFile(e.target.files[0])}
+      />
+
+      {/* Drag */}
       <div
-        className="border-dashed border-2 p-10 rounded mb-4 text-center"
         onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault();
-          extractText(e.dataTransfer.files[0]);
+        onDrop={drop}
+        style={{
+          border: "2px dashed gray",
+          padding: 40,
+          marginTop: 15,
+          textAlign: "center"
         }}
       >
-        Drag PDF or
-        <input
-          type="file"
-          accept=".pdf"
-          onChange={(e) => e.target.files && extractText(e.target.files[0])}
-        />
-      </div>
-
-      {/* Controls */}
-      <div className="flex gap-2 flex-wrap mb-4">
-        <button onClick={() => speakChunk(0)}>▶ Play</button>
-        <button onClick={stop}>⏹ Stop</button>
-        <button onClick={addBookmark}>🔖 Bookmark</button>
-        <button onClick={summarize}>✨ Summarize</button>
-      </div>
-
-      {/* ElevenLabs */}
-      <div className="mb-4">
-        <input
-          placeholder="ElevenLabs API Key (optional)"
-          value={elevenKey}
-          onChange={(e) => setElevenKey(e.target.value)}
-          className="text-black p-2 w-full"
-        />
-        <button onClick={elevenSpeak}>🎙 ElevenLabs Voice</button>
+        Drag & Drop PDF here
       </div>
 
       {/* Progress */}
-      <div className="h-2 bg-gray-400 mb-4 rounded">
-        <div
-          style={{ width: progress + "%" }}
-          className="h-full bg-green-500"
-        />
+      {progress > 0 && (
+        <progress value={progress} max={100} style={{ width: "100%", marginTop: 10 }} />
+      )}
+
+      {/* Buttons */}
+      <div style={{ marginTop: 20, display: "flex", flexWrap: "wrap", gap: 10 }}>
+        <button onClick={play}>▶ Play</button>
+        <button onClick={pause}>⏸ Pause</button>
+        <button onClick={resume}>🔁 Resume</button>
+        <button onClick={stop}>⏹ Stop</button>
+        <button onClick={bookmark}>🔖 Bookmark</button>
+        <button onClick={resumeBookmark}>↩ Resume Bookmark</button>
+        <button onClick={summarize}>🧠 Summarize</button>
+        <button onClick={() => setDark(!dark)}>🌙 Toggle Dark</button>
       </div>
 
-      {/* Chapters */}
-      {chapters.length > 0 && (
-        <div className="mb-4">
-          <h2>Chapters</h2>
-          {chapters.map((c, i) => (
-            <button key={i} onClick={() => speakChunk(c.start)}>
-              {c.title}
-            </button>
-          ))}
+      {/* Chapter nav */}
+      {chunks.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          Chapter:
+          <input
+            type="number"
+            min={0}
+            max={chunks.length - 1}
+            value={index}
+            onChange={(e) => setIndex(Number(e.target.value))}
+            style={{ marginLeft: 10, width: 70 }}
+          />
         </div>
       )}
 
-      {/* Bookmarks */}
-      {bookmarks.length > 0 && (
-        <div className="mb-4">
-          <h2>Bookmarks</h2>
-          {bookmarks.map((b, i) => (
-            <button key={i} onClick={() => speakChunk(b)}>
-              Jump {i + 1}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Summary */}
-      {summary && (
-        <textarea
-          value={summary}
-          readOnly
-          className="w-full h-24 text-black mb-4"
-        />
-      )}
-
-      {/* Text */}
+      {/* Text preview */}
       <textarea
         value={text}
         readOnly
-        className="w-full h-56 text-black"
+        style={{
+          width: "100%",
+          height: 300,
+          marginTop: 20,
+          padding: 10
+        }}
       />
-
-      {/* Download */}
-      {audioURL && (
-        <a href={audioURL} download="audio.mp3">
-          Save Audio
-        </a>
-      )}
     </main>
   );
 }
