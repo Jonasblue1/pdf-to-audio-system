@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
 declare global {
   interface Window {
@@ -9,12 +9,19 @@ declare global {
 }
 
 export default function Home() {
+  /* ================= STATES ================= */
   const [text, setText] = useState("");
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [voiceIndex, setVoiceIndex] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [dark, setDark] = useState(true);
+  const [history, setHistory] = useState<string[]>([]);
+  const [audioURL, setAudioURL] = useState("");
 
-  /* ---------------- LOAD PDF.JS FROM CDN ---------------- */
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const audioChunks = useRef<Blob[]>([]);
+
+  /* ================= LOAD PDF.JS CDN ================= */
   useEffect(() => {
     const script = document.createElement("script");
     script.src =
@@ -28,102 +35,178 @@ export default function Home() {
     document.body.appendChild(script);
   }, []);
 
-  /* ---------------- LOAD VOICES ---------------- */
+  /* ================= LOAD VOICES ================= */
   useEffect(() => {
-    const loadVoices = () => {
-      setVoices(window.speechSynthesis.getVoices());
-    };
-
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices;
+    const load = () => setVoices(window.speechSynthesis.getVoices());
+    load();
+    window.speechSynthesis.onvoiceschanged = load;
   }, []);
 
-  /* ---------------- PDF TEXT EXTRACTION ---------------- */
+  /* ================= HISTORY ================= */
+  useEffect(() => {
+    const h = JSON.parse(localStorage.getItem("history") || "[]");
+    setHistory(h);
+  }, []);
+
+  const saveHistory = (name: string) => {
+    const newH = [name, ...history].slice(0, 5);
+    setHistory(newH);
+    localStorage.setItem("history", JSON.stringify(newH));
+  };
+
+  /* ================= PDF EXTRACTION ================= */
   const extractText = async (file: File) => {
-    const arrayBuffer = await file.arrayBuffer();
+    const buffer = await file.arrayBuffer();
 
-    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
 
-    let fullText = "";
+    let full = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
 
-      const strings = content.items.map((item: any) => item.str);
-      fullText += strings.join(" ") + "\n\n";
+      const strings = content.items.map((it: any) => it.str);
+      full += strings.join(" ") + "\n\n";
     }
 
-    setText(fullText);
+    setText(full);
+    saveHistory(file.name);
   };
 
-  /* ---------------- SPEECH ---------------- */
+  /* ================= SPEECH + RECORD ================= */
   const speak = () => {
     if (!text) return;
 
     const utter = new SpeechSynthesisUtterance(text);
     utter.voice = voices[voiceIndex];
 
+    /* progress */
     utter.onboundary = (e) => {
       setProgress((e.charIndex / text.length) * 100);
     };
 
-    window.speechSynthesis.speak(utter);
+    /* record audio */
+    const stream = new AudioContext().createMediaStreamDestination();
+
+    const recorder = new MediaRecorder(stream.stream);
+    mediaRecorder.current = recorder;
+
+    recorder.ondataavailable = (e) => audioChunks.current.push(e.data);
+
+    recorder.onstop = () => {
+      const blob = new Blob(audioChunks.current, { type: "audio/webm" });
+      setAudioURL(URL.createObjectURL(blob));
+      audioChunks.current = [];
+    };
+
+    recorder.start();
+
+    speechSynthesis.speak(utter);
   };
 
-  const stop = () => window.speechSynthesis.cancel();
+  const stop = () => {
+    speechSynthesis.cancel();
+    mediaRecorder.current?.stop();
+  };
 
-  /* ---------------- UI ---------------- */
+  /* ================= DRAG DROP ================= */
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) extractText(e.dataTransfer.files[0]);
+  };
+
+  /* ================= UI ================= */
   return (
-    <main style={{ padding: 30, fontFamily: "sans-serif" }}>
-      <h1>📄➡️🔊 PDF to Audio Reader (Real Text Version)</h1>
+    <main
+      className={`min-h-screen p-8 transition-all ${
+        dark
+          ? "bg-gradient-to-br from-gray-900 to-black text-white"
+          : "bg-gradient-to-br from-gray-100 to-white text-black"
+      }`}
+    >
+      <h1 className="text-3xl font-bold mb-6">
+        🚀 Pro PDF → Audio Reader
+      </h1>
 
-      <input
-        type="file"
-        accept=".pdf"
-        onChange={(e) => e.target.files && extractText(e.target.files[0])}
-      />
+      {/* Dark toggle */}
+      <button
+        onClick={() => setDark(!dark)}
+        className="px-4 py-2 rounded bg-blue-600 text-white mb-4"
+      >
+        Toggle Dark/Light
+      </button>
 
-      <br />
-      <br />
+      {/* Upload */}
+      <div
+        onDrop={handleDrop}
+        onDragOver={(e) => e.preventDefault()}
+        className="border-2 border-dashed p-10 text-center rounded-lg mb-4"
+      >
+        Drag & Drop PDF here
+        <br />
+        <input
+          type="file"
+          accept=".pdf"
+          onChange={(e) =>
+            e.target.files && extractText(e.target.files[0])
+          }
+          className="mt-2"
+        />
+      </div>
 
+      {/* History */}
+      <div className="mb-4 text-sm">
+        Last PDFs: {history.join(" | ")}
+      </div>
+
+      {/* Text */}
       <textarea
         value={text}
         readOnly
-        style={{ width: "100%", height: 250 }}
+        className="w-full h-48 p-2 rounded text-black"
       />
 
-      <br />
+      {/* Controls */}
+      <div className="flex gap-2 mt-4 flex-wrap">
+        <select
+          onChange={(e) => setVoiceIndex(Number(e.target.value))}
+          className="text-black p-2"
+        >
+          {voices.map((v, i) => (
+            <option key={i} value={i}>
+              {v.name}
+            </option>
+          ))}
+        </select>
 
-      <select onChange={(e) => setVoiceIndex(Number(e.target.value))}>
-        {voices.map((v, i) => (
-          <option key={i} value={i}>
-            {v.name}
-          </option>
-        ))}
-      </select>
+        <button onClick={speak} className="bg-green-600 px-4 py-2 rounded">
+          ▶ Play
+        </button>
 
-      <br />
-      <br />
+        <button onClick={stop} className="bg-red-600 px-4 py-2 rounded">
+          ⏹ Stop
+        </button>
+      </div>
 
-      <button onClick={speak}>▶ Play</button>
-      <button onClick={stop}>⏹ Stop</button>
-
-      <div
-        style={{
-          height: 6,
-          background: "#ddd",
-          marginTop: 10,
-        }}
-      >
+      {/* Progress */}
+      <div className="h-2 bg-gray-300 mt-4 rounded">
         <div
-          style={{
-            height: "100%",
-            width: progress + "%",
-            background: "green",
-          }}
+          style={{ width: progress + "%" }}
+          className="h-full bg-green-500 rounded"
         />
       </div>
+
+      {/* Download */}
+      {audioURL && (
+        <a
+          href={audioURL}
+          download="speech.webm"
+          className="block mt-4 underline"
+        >
+          Save Audio
+        </a>
+      )}
     </main>
   );
 }
