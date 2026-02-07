@@ -1,21 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 export default function Home() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
 
-  let utterance: SpeechSynthesisUtterance | null = null;
+  // 🔥 MUST be ref (not variable)
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  /* ================= LOAD PDF + EXTRACT TEXT ================= */
+  /* ================= PDF → TEXT ================= */
   const handleFile = async (file: File) => {
-    if (!file) return;
-
     setLoading(true);
 
-    // SAFE dynamic import (browser only)
     const pdfjs: any = await import("pdfjs-dist");
 
     pdfjs.GlobalWorkerOptions.workerSrc =
@@ -30,11 +27,7 @@ export default function Home() {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
 
-      const pageText = content.items
-        .map((item: any) => item.str)
-        .join(" ");
-
-      result += pageText + "\n\n";
+      result += content.items.map((i: any) => i.str).join(" ") + "\n\n";
     }
 
     setText(result);
@@ -43,40 +36,31 @@ export default function Home() {
 
   /* ================= SPEECH ================= */
   const play = () => {
-    if (!text) return alert("Upload a PDF first");
+    if (!text) {
+      alert("Upload a PDF first");
+      return;
+    }
 
-    speechSynthesis.cancel();
+    // cancel any existing
+    window.speechSynthesis.cancel();
 
-    utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1;
 
-    utterance.onend = () => setSpeaking(false);
+    utteranceRef.current = utter;
 
-    speechSynthesis.speak(utterance);
-    setSpeaking(true);
+    window.speechSynthesis.speak(utter);
   };
 
-  const pause = () => speechSynthesis.pause();
-  const resume = () => speechSynthesis.resume();
-  const stop = () => {
-    speechSynthesis.cancel();
-    setSpeaking(false);
-  };
+  const pause = () => window.speechSynthesis.pause();
+  const resume = () => window.speechSynthesis.resume();
+  const stop = () => window.speechSynthesis.cancel();
 
   /* ================= UI ================= */
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        padding: 40,
-        background: "#111",
-        color: "white",
-        fontFamily: "sans-serif",
-      }}
-    >
-      <h1>📄 Simple PDF → Speech Reader</h1>
+    <main style={{ padding: 40, fontFamily: "sans-serif" }}>
+      <h2>PDF → Speech Reader (Simple + Working)</h2>
 
-      {/* Upload */}
       <input
         type="file"
         accept="application/pdf"
@@ -85,17 +69,15 @@ export default function Home() {
         }
       />
 
-      {loading && <p>Extracting text...</p>}
+      {loading && <p>Reading PDF...</p>}
 
-      {/* Controls */}
       <div style={{ marginTop: 20 }}>
-        <button onClick={play}>▶ Play</button>
-        <button onClick={pause}>⏸ Pause</button>
-        <button onClick={resume}>▶ Resume</button>
-        <button onClick={stop}>⏹ Stop</button>
+        <button onClick={play}>Play</button>
+        <button onClick={pause}>Pause</button>
+        <button onClick={resume}>Resume</button>
+        <button onClick={stop}>Stop</button>
       </div>
 
-      {/* Text preview */}
       <textarea
         value={text}
         readOnly
@@ -103,9 +85,6 @@ export default function Home() {
           width: "100%",
           height: 300,
           marginTop: 20,
-          background: "#222",
-          color: "white",
-          padding: 10,
         }}
       />
     </main>
