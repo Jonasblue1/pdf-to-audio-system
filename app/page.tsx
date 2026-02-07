@@ -6,86 +6,97 @@ export default function Home() {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // 🔥 MUST be ref (not variable)
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  /* ================= PDF → TEXT ================= */
+  /* ================================
+     LOAD PDF + EXTRACT TEXT
+  ================================= */
   const handleFile = async (file: File) => {
     setLoading(true);
+    setText("");
 
-    const pdfjs: any = await import("pdfjs-dist");
+    try {
+      // load pdfjs ONLY in browser
+      const pdfjsLib = await import("pdfjs-dist");
 
-    pdfjs.GlobalWorkerOptions.workerSrc =
-      `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+      // ⭐ IMPORTANT — use SAME VERSION local worker
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "/pdf.worker.min.mjs";
 
-    const buffer = await file.arrayBuffer();
-    const pdf = await pdfjs.getDocument({ data: buffer }).promise;
+      const buffer = await file.arrayBuffer();
 
-    let result = "";
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
 
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
+      let fullText = "";
 
-      result += content.items.map((i: any) => i.str).join(" ") + "\n\n";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+
+        const pageText = content.items
+          .map((item: any) => item.str)
+          .join(" ");
+
+        fullText += pageText + "\n\n";
+      }
+
+      setText(fullText);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to read PDF");
     }
 
-    setText(result);
     setLoading(false);
   };
 
-  /* ================= SPEECH ================= */
-  const play = () => {
-    if (!text) {
-      alert("Upload a PDF first");
-      return;
-    }
+  /* ================================
+     SPEECH
+  ================================= */
+  const speak = () => {
+    if (!text) return alert("Upload a PDF first");
 
-    // cancel any existing
-    window.speechSynthesis.cancel();
+    speechSynthesis.cancel();
 
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 1;
+    utter.pitch = 1;
 
-    utteranceRef.current = utter;
-
-    window.speechSynthesis.speak(utter);
+    utterRef.current = utter;
+    speechSynthesis.speak(utter);
   };
 
-  const pause = () => window.speechSynthesis.pause();
-  const resume = () => window.speechSynthesis.resume();
-  const stop = () => window.speechSynthesis.cancel();
+  const pause = () => speechSynthesis.pause();
+  const resume = () => speechSynthesis.resume();
+  const stop = () => speechSynthesis.cancel();
 
-  /* ================= UI ================= */
+  /* ================================
+     UI
+  ================================= */
   return (
-    <main style={{ padding: 40, fontFamily: "sans-serif" }}>
-      <h2>PDF → Speech Reader (Simple + Working)</h2>
+    <main style={{ maxWidth: 700, margin: "40px auto", padding: 20 }}>
+      <h2>📄 Simple PDF → Speech Reader</h2>
 
       <input
         type="file"
         accept="application/pdf"
-        onChange={(e) =>
-          e.target.files && handleFile(e.target.files[0])
-        }
+        onChange={(e) => {
+          if (e.target.files?.[0]) handleFile(e.target.files[0]);
+        }}
       />
 
-      {loading && <p>Reading PDF...</p>}
+      {loading && <p>Extracting text...</p>}
 
       <div style={{ marginTop: 20 }}>
-        <button onClick={play}>Play</button>
-        <button onClick={pause}>Pause</button>
-        <button onClick={resume}>Resume</button>
-        <button onClick={stop}>Stop</button>
+        <button onClick={speak}>▶ Play</button>
+        <button onClick={pause}>⏸ Pause</button>
+        <button onClick={resume}>▶ Resume</button>
+        <button onClick={stop}>⏹ Stop</button>
       </div>
 
       <textarea
         value={text}
         readOnly
-        style={{
-          width: "100%",
-          height: 300,
-          marginTop: 20,
-        }}
+        style={{ width: "100%", height: 300, marginTop: 20 }}
       />
     </main>
   );
